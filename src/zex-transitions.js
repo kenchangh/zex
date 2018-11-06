@@ -14,6 +14,12 @@ async function initContract(privateKey, contractAddress) {
       type: "ByStr20"
     }
   ];
-  const txHash = await createTransaction(privateKey, "initContract", 0, params);
+  const txHash = await createTransaction(
+    "./ZEX.scilla",
+    privateKey,
+    "initContract",
+    0,
+    params
+  );
   return txHash;
 }
