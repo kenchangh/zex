@@ -1,31 +1,61 @@
 (* library code *)
+import BoolUtils
+
 library ZEX
 
 (* Hardcoded variables *)
 let zero = Uint128 0
-let sellOrder = Uint32 0
-let buyOrder = Uint32 1
+let sellOrderCode = Uint32 0
+let buyOrderCode = Uint32 1
 
 (* Return message codes *)
 let successCode = Uint32 0
 let ownerOnlyCode = Uint32 1
 let uninitializedCode = Uint32 2
 let orderMadeCode = Uint32 3
+let notAcceptingZILCode = Uint32 4
+let invalidOrderTypeCode = Uint32 5
+let invalidAmountSentCode = Uint32 6
 
 let one_msg =
   fun (msg : Message) =>
     let nil_msg = Nil {Message} in
     Cons {Message} msg nil_msg
 
+let isValidOrderType =
+    fun (orderType: Uint32) =>
+        let isBuy = builtin eq orderType buyOrderCode in
+        let isSell = builtin eq orderType sellOrderCode in
+        orb isBuy isSell
+
 let createOrderId =
     fun (tokenAddress: ByStr20) =>
+    fun (orderType: Uint32) =>
     fun (price: Uint128) =>
         let hTokenAddress = builtin sha256hash tokenAddress in
+        let hOrderType = builtin sha256hash orderType in
         let hPrice = builtin sha256hash price in
         let concatMap = Emp ByStr32 ByStr32 in
-        let concatMap = builtin put concatMap hTokenAddress hPrice in
+        let concatMap = builtin put concatMap hTokenAddress hOrderType in
+        let concatMap = builtin put concatMap hPrice hPrice in
         let orderId = builtin sha256hash concatMap in
         orderId
+
+(* Find the order ID of an opposing order type *)
+let createOppositeOrderId =
+    fun (tokenAddress: ByStr20) =>
+    fun (orderType: Uint32) =>
+    fun (price: Uint128) =>
+        let isSell = builtin eq orderType sellOrderCode in
+        let oppOrderType =
+            match isSell with
+            | True =>
+                buyOrderCode
+            | False =>
+                sellOrderCode
+            end
+        in
+        createOrderId tokenAddress oppOrderType price
 
 (* contract source *)
 contract ZEX
@@ -67,58 +97,93 @@ transition makeOrder(
     tokenAddress: ByStr20,  orderType: Uint32,
     amount: Uint128, price: Uint128
 )
-    thisContractAddress <- zexContractAddress;
+
+    isValid = isValidOrderType orderType;
     
-    match thisContractAddress with
-    | None =>
-        msg = { _tag: "transferFrom"; _recipient: contractOwner;
-            _amount: zero; code: uninitializedCode };
+    match isValid with
+    | False =>
+        msg = { _tag: ""; _recipient: _sender;
+            _amount: zero; code: invalidOrderTypeCode };
         msgs = one_msg msg;
         send msgs
-    | Some thisContractAddress =>
+    | True =>
+        thisContractAddress <- zexContractAddress;
         
-        (* check out the matchOrderAmounts first *)
-        book <- orderbook;
-        orders = builtin get book tokenAddress;
-        
-        orders =
-            match orders with
-            | None =>
-                Emp ByStr32 (Pair (Uint128) (Uint128))
-            | Some orders =>
-                orders
-            end;
-        
-        orderId = createOrderId tokenAddress price;
-        orderPair = builtin get orders orderId;
-        
-        match orderPair with
-        (* First case, making liquidity, adding new order *)
+        match thisContractAddress with
         | None =>
-            (* Firstly, add to the orderbook *)
-            newOrderPair = Pair {(Uint128) (Uint128)} amount zero;
-            orders = builtin put orders orderId newOrderPair;
-            book = builtin put book tokenAddress orders;
-            orderbook := book;
-            msg = { _tag: "transferFrom"; _recipient: tokenAddress;
-                _amount: zero; code: orderMadeCode };
+            msg = { _tag: ""; _recipient: contractOwner;
+                _amount: zero; code: uninitializedCode };
             msgs = one_msg msg;
             send msgs
+        | Some thisContractAddress =>
             
-        (* Second case, taking liquidity, increase amount matched *)
-        (* Some cases, all matched and add back the leftover to the orderbook *)
-        | Some orderPair =>
+            (* check out the matchOrderAmounts first *)
+            book <- orderbook;
+            orders = builtin get book tokenAddress;
             
+            (* Create a map with the tokenAddress, if not exists *)
+            orders =
+                match orders with
+                | None =>
+                    Emp ByStr32 (Pair (Uint128) (Uint128))
+                | Some orders =>
+                    orders
+                end;
+            
+            oppositeOrderId = createOppositeOrderId tokenAddress orderType price;
+            orderId = createOrderId tokenAddress orderType price;
+            orderPair = builtin get orders oppositeOrderId;
+            
+            match orderPair with
+            (* First case, making liquidity, adding new order *)
+            | None =>
+                (* Firstly, add to the orderbook *)
+                newOrderPair = Pair {(Uint128) (Uint128)} amount zero;
+                orders = builtin put orders orderId newOrderPair;
+                book = builtin put book tokenAddress orders;
+                orderbook := book;
+                
+                (* If it's a buy order for token, accept ZIL*)
+                totalAmount = builtin mul amount price;
+                correctAmount = builtin eq _amount totalAmount;
+                isBuyOrder = builtin eq orderType buyOrderCode;
+                
+                match isBuyOrder with
+                | True =>
+                    match correctAmount with
+                    | False =>
+                        msg = { _tag: ""; _recipient: _sender;
+                            _amount: zero; code: invalidAmountSentCode };
+                        msgs = one_msg msg;
+                        send msgs
+                    | True =>
+                        accept;
+                         msg = { _tag: ""; _recipient: _sender;
+                            _amount: zero; code: orderMadeCode };
+                        msgs = one_msg msg;
+                        send msgs
+                    end
+                | False =>
+                    (* If it's a sell, there must already be an approval for token transfer *)
+                    (* We have no way of checking the amount approved now *)
+                    
+                    
+                    (* Make the token transfer happen *)
+    (*                msg = { _tag: "transferFrom"; _recipient: tokenAddress;*)
+    (*                    _amount: zero; code: orderMadeCode; from: _sender;*)
+    (*                    to: thisContractAddress };*)
+    (*                msgs = one_msg msg;*)
+    (*                send msgs*)
+                end
+                
+            (* Second case, taking liquidity, increase amount matched *)
+            (* Some cases, all matched and add back the leftover to the orderbook *)
+            | Some orderPair =>
+                
+            end
+        
         end
-    
-        (* The user needs to have approved the transfer already *)
-        (* Assumes the user's balance is sufficient *)
-(*        msg = { _tag: "transferFrom"; _recipient: tokenAddress;*)
-(*            _amount: zero; from: _sender; to: thisContractAddress };*)
-(*        msgs = one_msg msg;*)
-(*        send msgs*)
     end
-
 end
 
 
