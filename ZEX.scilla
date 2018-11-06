@@ -9,13 +9,14 @@ let sellOrderCode = Uint32 0
 let buyOrderCode = Uint32 1
 
 (* Return message codes *)
-let successCode = Uint32 0
+let initializedContractCode = Uint32 0
 let ownerOnlyCode = Uint32 1
 let uninitializedCode = Uint32 2
 let orderMadeCode = Uint32 3
 let notAcceptingZILCode = Uint32 4
 let invalidOrderTypeCode = Uint32 5
 let invalidAmountSentCode = Uint32 6
+let canOnlyInitializeOnceCode = Uint32 7
 
 let one_msg =
   fun (msg : Message) =>
@@ -81,10 +82,22 @@ transition initContract(thisContractAddress: ByStr20)
         msgs = one_msg msg;
         send msgs
     | True =>
-        msg = { _tag: ""; _recipient: _sender;
-            _amount: zero; code: successCode };
-        msgs = one_msg msg;
-        send msgs
+        contractAddress <- zexContractAddress;
+        
+        match contractAddress with
+        | None =>
+            someAddress = Some {ByStr20} thisContractAddress;
+            zexContractAddress := someAddress;
+            msg = { _tag: ""; _recipient: _sender;
+                _amount: zero; code: initializedContractCode };
+            msgs = one_msg msg;
+            send msgs
+        | Some contractAddress =>
+            msg = { _tag: ""; _recipient: _sender;
+                _amount: zero; code: canOnlyInitializeOnceCode };
+            msgs = one_msg msg;
+            send msgs
+        end
     end
 end
 
@@ -166,14 +179,14 @@ transition makeOrder(
                 | False =>
                     (* If it's a sell, there must already be an approval for token transfer *)
                     (* We have no way of checking the amount approved now *)
-                    
+                    (* Store the tokens in the contract, as long as the order exists *)
                     
                     (* Make the token transfer happen *)
-    (*                msg = { _tag: "transferFrom"; _recipient: tokenAddress;*)
-    (*                    _amount: zero; code: orderMadeCode; from: _sender;*)
-    (*                    to: thisContractAddress };*)
-    (*                msgs = one_msg msg;*)
-    (*                send msgs*)
+                    msg = { _tag: "transferFrom"; _recipient: tokenAddress;
+                        _amount: zero; code: orderMadeCode; from: _sender;
+                        to: thisContractAddress };
+                    msgs = one_msg msg;
+                    send msgs
                 end
                 
             (* Second case, taking liquidity, increase amount matched *)
