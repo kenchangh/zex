@@ -1,44 +1,25 @@
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+ZEX
+===
 
-## Available Scripts
+### Decentralized Exchange on Zilliqa
 
-In the project directory, you can run:
+Using the FungibleToken contract, ZEX attempts to create a decentralized exchange, like 0x on Zilliqa. Currently, it only supports $TOKEN/$ZIL pairings, where it can only support the buying and selling of tokens with Zilliqa. Token to token trades are not possible at this moment.
 
-### `npm start`
+### initContract
 
-Runs the app in the development mode.<br>
-Open [http://localhost:3000](http://localhost:3000) to view it in the browser.
+(thisContractAddress: ByStr20)
 
-The page will reload if you make edits.<br>
-You will also see any lint errors in the console.
+Stores the contract's address initially. All contract transitions will be rejected if it's not initialized. This is because the contract has no way of knowing its own address.
 
-### `npm test`
+### makeOrder
 
-Launches the test runner in the interactive watch mode.<br>
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+(tokenAddress: ByStr20,  orderType: Uint32, amount: Uint128, price: Uint128)
 
-### `npm run build`
+`tokenAddress` refers to the token contract held at the address.
+`orderType` can only be `0` representing sell orders and `1` representing buy orders.
+`amount` the amount of tokens to exchange.
+`price` the price at which the tokens are exchanged for.
 
-Builds the app for production to the `build` folder.<br>
-It correctly bundles React in production mode and optimizes the build for the best performance.
+In buy orders, users are required to send in the total amount (i.e. price * amount) of ZIL in the transaction call. This indicates the user will buy the amount of tokens at that price.
 
-The build is minified and the filenames include the hashes.<br>
-Your app is ready to be deployed!
-
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
-
-### `npm run eject`
-
-**Note: this is a one-way operation. Once you `eject`, you can’t go back!**
-
-If you aren’t satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
-
-Instead, it will copy all the configuration files and the transitive dependencies (Webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you’re on your own.
-
-You don’t have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn’t feel obligated to use this feature. However we understand that this tool wouldn’t be useful if you couldn’t customize it when you are ready for it.
-
-## Learn More
-
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
-
-To learn React, check out the [React documentation](https://reactjs.org/).
+In sell orders, users are required to first call the `Approve` transition in the FungibleToken contract with the total amount. This is so that the ZEX contract is able to spend the user's tokens. The amount approved for the ZEX contract to spend has to be price * amount. The user is able to redeem their tokens for ZIL from the contract.
