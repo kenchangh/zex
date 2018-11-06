@@ -1,0 +1,146 @@
+(* library code *)
+library ZEX
+
+(* Hardcoded variables *)
+let zero = Uint128 0
+let sellOrder = Uint32 0
+let buyOrder = Uint32 1
+
+(* Return message codes *)
+let successCode = Uint32 0
+let ownerOnlyCode = Uint32 1
+let uninitializedCode = Uint32 2
+let orderMadeCode = Uint32 3
+
+let one_msg =
+  fun (msg : Message) =>
+    let nil_msg = Nil {Message} in
+    Cons {Message} msg nil_msg
+
+let createOrderId =
+    fun (tokenAddress: ByStr20) =>
+    fun (price: Uint128) =>
+        let hTokenAddress = builtin sha256hash tokenAddress in
+        let hPrice = builtin sha256hash price in
+        let concatMap = Emp ByStr32 ByStr32 in
+        let concatMap = builtin put concatMap hTokenAddress hPrice in
+        let orderId = builtin sha256hash concatMap in
+        orderId
+
+(* contract source *)
+contract ZEX
+(contractOwner: ByStr20)
+
+(* This needs to be added as an input because the contract doesn't know its own address *)
+field zexContractAddress: Option ByStr20 = None {ByStr20}
+
+(* Map(orderId => List( Map(price => Pair(userAddress, amount)) ) *)
+field matchedOrders: Map ByStr32 (List (Map Uint128 ((Pair (ByStr32) (Uint128))))) =
+    Emp ByStr32 (List (Map Uint128 ((Pair (ByStr32) (Uint128)))))
+
+(* Map(tokenAddress => Map(orderId => Pair(orderAmount, matchedOrderAmount)) ) *)
+field orderbook: Map ByStr20 (Map ByStr32 (Pair (Uint128) (Uint128))) =
+    Emp ByStr20 (Map ByStr32 (Pair (Uint128) (Uint128)))
+
+transition initContract(thisContractAddress: ByStr20)
+    isOwner = builtin eq contractOwner _sender;
+    match isOwner with
+    | False =>
+        msg = { _tag: ""; _recipient: _sender;
+            _amount: zero; code: ownerOnlyCode };
+        msgs = one_msg msg;
+        send msgs
+    | True =>
+        msg = { _tag: ""; _recipient: _sender;
+            _amount: zero; code: successCode };
+        msgs = one_msg msg;
+        send msgs
+    end
+end
+
+(* Either of 2 things can happen when this transition is called: *)
+(* 1. Add to orderBook if no matching price *)
+(* 2. Add to matchingOrders if matching price *)
+(* 3. If after adding to matchingOrders, and there's leftover,*)
+(*    add to orderBook with that price *)
+transition makeOrder(
+    tokenAddress: ByStr20,  orderType: Uint32,
+    amount: Uint128, price: Uint128
+)
+    thisContractAddress <- zexContractAddress;
+    
+    match thisContractAddress with
+    | None =>
+        msg = { _tag: "transferFrom"; _recipient: contractOwner;
+            _amount: zero; code: uninitializedCode };
+        msgs = one_msg msg;
+        send msgs
+    | Some thisContractAddress =>
+        
+        (* check out the matchOrderAmounts first *)
+        book <- orderbook;
+        orders = builtin get book tokenAddress;
+        
+        orders =
+            match orders with
+            | None =>
+                Emp ByStr32 (Pair (Uint128) (Uint128))
+            | Some orders =>
+                orders
+            end;
+        
+        orderId = createOrderId tokenAddress price;
+        orderPair = builtin get orders orderId;
+        
+        match orderPair with
+        (* First case, making liquidity, adding new order *)
+        | None =>
+            (* Firstly, add to the orderbook *)
+            newOrderPair = Pair {(Uint128) (Uint128)} amount zero;
+            orders = builtin put orders orderId newOrderPair;
+            book = builtin put book tokenAddress orders;
+            orderbook := book;
+            msg = { _tag: "transferFrom"; _recipient: tokenAddress;
+                _amount: zero; code: orderMadeCode };
+            msgs = one_msg msg;
+            send msgs
+            
+        (* Second case, taking liquidity, increase amount matched *)
+        (* Some cases, all matched and add back the leftover to the orderbook *)
+        | Some orderPair =>
+            
+        end
+    
+        (* The user needs to have approved the transfer already *)
+        (* Assumes the user's balance is sufficient *)
+(*        msg = { _tag: "transferFrom"; _recipient: tokenAddress;*)
+(*            _amount: zero; from: _sender; to: thisContractAddress };*)
+(*        msgs = one_msg msg;*)
+(*        send msgs*)
+    end
+
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
