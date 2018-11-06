@@ -39,7 +39,7 @@ async function getLatestDeployedContract(contractPath) {
     });
     const matching =
       contractPath === ZEX_CONTRACT_PATH ? "ZEX" : "FungibleToken";
-    if (foundCode.result.code.indexOf("ZEX") !== -1) {
+    if (foundCode.result.code.indexOf(matching) !== -1) {
       return contract;
     }
   }

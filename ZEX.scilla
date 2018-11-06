@@ -18,6 +18,7 @@ let invalidOrderTypeCode = Uint32 5
 let invalidAmountSentCode = Uint32 6
 let canOnlyInitializeOnceCode = Uint32 7
 let orderFilledCode = Uint32 8
+let noUserExistsCode = Uint32 9
 
 let fstOrder = @fst (Uint128) (Uint128)
 let sndOrder = @snd (Uint128) (Uint128)
@@ -90,7 +91,7 @@ let buyOrdersToMessages =
                 let amount = sndMatch pair in
                 let msg = { _tag: "Transfer"; _recipient: tokenAddress;
                     _amount: zero; from: contractAddress;
-                    to: tokenAddress; tokens: amount } in 
+                    to: recipient; tokens: amount } in 
                 msg
         in
         let mapper = @list_map (Pair (ByStr20) (Uint128)) Message in
@@ -181,20 +182,20 @@ transition makeOrder(
             
             (* check out the matchOrderAmounts first *)
             book <- orderbook;
-            orders = builtin get book tokenAddress;
+            allOrders = builtin get book tokenAddress;
             
             (* Create a map with the tokenAddress, if not exists *)
-            orders =
-                match orders with
+            allOrders =
+                match allOrders with
                 | None =>
                     Emp ByStr32 (Pair (Uint128) (Uint128))
-                | Some orders =>
-                    orders
+                | Some allOrders =>
+                    allOrders
                 end;
             
             oppositeOrderId = createOppositeOrderId tokenAddress orderType price;
             orderId = createOrderId tokenAddress orderType price;
-            orderPair = builtin get orders oppositeOrderId;
+            orderPair = builtin get allOrders oppositeOrderId;
             isBuyOrder = builtin eq orderType buyOrderCode;
             
             match orderPair with
@@ -202,7 +203,7 @@ transition makeOrder(
             | None =>
                 (* Firstly, add to the orderbook *)
                 newOrderPair = Pair {(Uint128) (Uint128)} amount zero;
-                orders = builtin put orders orderId newOrderPair;
+                orders = builtin put allOrders orderId newOrderPair;
                 book = builtin put book tokenAddress orders;
                 orderbook := book;
                 
@@ -255,31 +256,66 @@ transition makeOrder(
                     (* Fully matched remove the order from the orderbook *)
                     fullyMatched = builtin eq newMatchedAmount totalAmount;
                     ordersMatched <- matchedOrders;
+                    orderMadeBy <- orderToUser;
                     
-                    match fullyMatched with
-                    (* Fully matched*)
-                    | True =>
+                    user = builtin get orderMadeBy oppositeOrderId;
+                    
+                    match user with
+                    | None =>
+                        msg = { _tag: ""; _recipient: _sender;
+                            _amount: zero; code: noUserExistsCode };
+                        msgs = one_msg msg;
+                        send msgs
+                    | Some user =>
+                        
+                        (* Transfer tokens to user that made the order *)
+                        fulfilledOrderMessage = { _tag: "Transfer"; _recipient: tokenAddress;
+                            _amount: zero; from: thisContractAddress;
+                            to: user; tokens: amount };
+                        
                         (* Resolve all outstanding matching orders *)
                         
                         orders = builtin get ordersMatched oppositeOrderId;
                         newPair = Pair {(ByStr20) (Uint128)} _sender amount;
                         
+                        orderMadeBy = builtin remove orderMadeBy oppositeOrderId;
+                        ordersMatched = builtin remove ordersMatched oppositeOrderId;
+                        allOrders = builtin remove allOrders oppositeOrderId; 
+                        
+                        
+                        overflow =
+                            match fullyMatched with
+                            | True =>
+                                zero
+                            | False =>
+                                builtin sub newMatchedAmount totalAmount
+                            end;
+                            
+                        (* Add the overflow as a new order *)
+                        (* Add to the correct side now, sell -> sell, buy -> buy*)
+                        overflowPair = Pair {(Uint128) (Uint128)} overflow zero;
+                        ordersMadeBy = builtin put orderMadeBy orderId _sender;
+                        allOrders = builtin put allOrders orderId overflowPair;
+                        
+                        orderToUser := orderMadeBy;
+                        matchedOrders := ordersMatched;
+                        book = builtin put book tokenAddress allOrders;
+                        orderbook := book;
+                        
                         match isBuyOrder with
                         | True =>
-                            
                             (* Buy orders have a list of matched sell orders *)
-                            match orders with
-                            | None =>
-                                (* This means that this is the only order that fills it *)
-                                nil = Nil {(Pair (ByStr20) (Uint128))};
-                                l1 = Cons {(Pair (ByStr20) (Uint128))} newPair nil;
-                                msgs = sellOrdersToMessages l1;
-                                send msgs
-                            | Some orders =>
-                                l1 = Cons {(Pair (ByStr20) (Uint128))} newPair orders;
-                                msgs = sellOrdersToMessages l1;
-                                send msgs
-                            end
+                            
+                            orders =
+                                match orders with
+                                | None =>
+                                    Nil {(Pair (ByStr20) (Uint128))}
+                                | Some orders =>
+                                    orders
+                                end;
+                            l1 = Cons {(Pair (ByStr20) (Uint128))} newPair orders;
+                            msgs = sellOrdersToMessages l1;
+                            send msgs
                             
                         | False =>
                             (* Sell orders have a list of matched buy orders *)
@@ -297,9 +333,7 @@ transition makeOrder(
                             end
                             
                         end
-                        
-                    (* Over match *)
-                    | False =>
+
                     end
                     
                 | True =>
