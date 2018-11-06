@@ -1,5 +1,5 @@
 (* library code *)
-import BoolUtils
+import BoolUtils PairUtils ListUtils
 
 library ZEX
 
@@ -17,6 +17,12 @@ let notAcceptingZILCode = Uint32 4
 let invalidOrderTypeCode = Uint32 5
 let invalidAmountSentCode = Uint32 6
 let canOnlyInitializeOnceCode = Uint32 7
+let orderFilledCode = Uint32 8
+
+let fstOrder = @fst (Uint128) (Uint128)
+let sndOrder = @snd (Uint128) (Uint128)
+let fstMatch = @fst (ByStr20) (Uint128)
+let sndMatch = @snd (ByStr20) (Uint128)
 
 let one_msg =
   fun (msg : Message) =>
@@ -58,6 +64,43 @@ let createOppositeOrderId =
         in
         createOrderId tokenAddress oppOrderType price
 
+(* Sell orders means they are exchanging tokens for ZIL *)
+let sellOrdersToMessages =
+    fun (matchedOrders: List ((Pair (ByStr20) (Uint128)))) =>
+        let toMessage =
+            fun (pair: Pair (ByStr20) (Uint128)) =>
+                let recipient = fstMatch pair in
+                let amount = sndMatch pair in
+                let msg = { _tag: ""; _recipient: recipient;
+                    _amount: amount; code: orderFilledCode } in 
+                msg
+        in
+        let mapper = @list_map (Pair (ByStr20) (Uint128)) Message in
+        let msgs = mapper toMessage matchedOrders in
+        msgs
+
+(* Buy orders means they are exchanging ZIL for tokens *)
+let buyOrdersToMessages =
+    fun (contractAddress: ByStr20) =>
+    fun (tokenAddress: ByStr20) =>
+    fun (matchedOrders: List ((Pair (ByStr20) (Uint128)))) =>
+        let toMessage =
+            fun (pair: Pair (ByStr20) (Uint128)) =>
+                let recipient = fstMatch pair in
+                let amount = sndMatch pair in
+                let msg = { _tag: "Transfer"; _recipient: tokenAddress;
+                    _amount: zero; from: contractAddress;
+                    to: tokenAddress; tokens: amount } in 
+                msg
+        in
+        let mapper = @list_map (Pair (ByStr20) (Uint128)) Message in
+        let msgs = mapper toMessage matchedOrders in
+        msgs
+
+(*msg = { _tag: "TransferFrom"; _recipient: tokenAddress;*)
+(*                        _amount: zero; code: orderMadeCode; from: _sender;*)
+(*                        to: thisContractAddress; tokens: totalAmount };*)
+
 (* contract source *)
 contract ZEX
 (contractOwner: ByStr20)
@@ -65,14 +108,20 @@ contract ZEX
 (* This needs to be added as an input because the contract doesn't know its own address *)
 field zexContractAddress: Option ByStr20 = None {ByStr20}
 
-(* Map(orderId => List( Map(price => Pair(userAddress, amount)) ) *)
-field matchedOrders: Map ByStr32 (List (Map Uint128 ((Pair (ByStr32) (Uint128))))) =
-    Emp ByStr32 (List (Map Uint128 ((Pair (ByStr32) (Uint128)))))
+(* Map(orderId => Map(price => List ( Pair(userAddress, amount)) ) *)
+field matchedOrders: Map ByStr32 (List ((Pair (ByStr20) (Uint128)))) =
+    Emp ByStr32 (List ((Pair (ByStr20) (Uint128))))
 
 (* Map(tokenAddress => Map(orderId => Pair(orderAmount, matchedOrderAmount)) ) *)
 field orderbook: Map ByStr20 (Map ByStr32 (Pair (Uint128) (Uint128))) =
     Emp ByStr20 (Map ByStr32 (Pair (Uint128) (Uint128)))
 
+(* Map(orderId => userAddress *)
+field orderToUser: Map ByStr32 ByStr20 =
+    Emp ByStr32 ByStr20
+
+(* Takes the contract address from the input *)
+(* Accepts any amount of funds in ZIL to pay for inter-contract callas *)
 transition initContract(thisContractAddress: ByStr20)
     isOwner = builtin eq contractOwner _sender;
     match isOwner with
@@ -146,6 +195,7 @@ transition makeOrder(
             oppositeOrderId = createOppositeOrderId tokenAddress orderType price;
             orderId = createOrderId tokenAddress orderType price;
             orderPair = builtin get orders oppositeOrderId;
+            isBuyOrder = builtin eq orderType buyOrderCode;
             
             match orderPair with
             (* First case, making liquidity, adding new order *)
@@ -159,7 +209,6 @@ transition makeOrder(
                 (* If it's a buy order for token, accept ZIL*)
                 totalAmount = builtin mul amount price;
                 correctAmount = builtin eq _amount totalAmount;
-                isBuyOrder = builtin eq orderType buyOrderCode;
                 
                 match isBuyOrder with
                 | True =>
@@ -182,9 +231,9 @@ transition makeOrder(
                     (* Store the tokens in the contract, as long as the order exists *)
                     
                     (* Make the token transfer happen *)
-                    msg = { _tag: "transferFrom"; _recipient: tokenAddress;
+                    msg = { _tag: "TransferFrom"; _recipient: tokenAddress;
                         _amount: zero; code: orderMadeCode; from: _sender;
-                        to: thisContractAddress };
+                        to: thisContractAddress; tokens: totalAmount };
                     msgs = one_msg msg;
                     send msgs
                 end
@@ -192,6 +241,70 @@ transition makeOrder(
             (* Second case, taking liquidity, increase amount matched *)
             (* Some cases, all matched and add back the leftover to the orderbook *)
             | Some orderPair =>
+                
+                totalAmount = fstOrder orderPair;
+                matchedAmount = sndOrder orderPair;
+                newMatchedAmount = builtin add matchedAmount amount;
+                
+                notFullyMatched = builtin lt newMatchedAmount totalAmount;
+                
+                match notFullyMatched with
+                (* Exceeds or equal the totalAmount *)
+                | False =>
+                    
+                    (* Fully matched remove the order from the orderbook *)
+                    fullyMatched = builtin eq newMatchedAmount totalAmount;
+                    ordersMatched <- matchedOrders;
+                    
+                    match fullyMatched with
+                    (* Fully matched*)
+                    | True =>
+                        (* Resolve all outstanding matching orders *)
+                        
+                        orders = builtin get ordersMatched oppositeOrderId;
+                        newPair = Pair {(ByStr20) (Uint128)} _sender amount;
+                        
+                        match isBuyOrder with
+                        | True =>
+                            
+                            (* Buy orders have a list of matched sell orders *)
+                            match orders with
+                            | None =>
+                                (* This means that this is the only order that fills it *)
+                                nil = Nil {(Pair (ByStr20) (Uint128))};
+                                l1 = Cons {(Pair (ByStr20) (Uint128))} newPair nil;
+                                msgs = sellOrdersToMessages l1;
+                                send msgs
+                            | Some orders =>
+                                l1 = Cons {(Pair (ByStr20) (Uint128))} newPair orders;
+                                msgs = sellOrdersToMessages l1;
+                                send msgs
+                            end
+                            
+                        | False =>
+                            (* Sell orders have a list of matched buy orders *)
+                            match orders with
+                            | None =>
+                                (* This means that this is the only order that fills it *)
+                                nil = Nil {(Pair (ByStr20) (Uint128))};
+                                l1 = Cons {(Pair (ByStr20) (Uint128))} newPair nil;
+                                msgs = buyOrdersToMessages thisContractAddress tokenAddress l1;
+                                send msgs
+                            | Some orders =>
+                                l1 = Cons {(Pair (ByStr20) (Uint128))} newPair orders;
+                                msgs = buyOrdersToMessages thisContractAddress tokenAddress l1;
+                                send msgs
+                            end
+                            
+                        end
+                        
+                    (* Over match *)
+                    | False =>
+                    end
+                    
+                | True =>
+                (* Under match *)
+                end
                 
             end
         
